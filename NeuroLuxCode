@@ -1,0 +1,129 @@
+#include <Wire.h>
+#include <BH1750.h>
+#include <EEPROM.h>
+
+// ================= I2C =================
+#define SDA_PIN D4
+#define SCL_PIN D5
+
+BH1750 lightMeter;
+
+// ================= MOTOR =================
+#define MotFwd D6
+#define MotRev D7
+
+// ================= ENCODER =================
+#define encoderPin1 D3
+#define encoderPin2 D2
+
+// ================= POSITIONS =================
+const long CLEAR_POSITION = -2000;
+const long DARK_POSITION  = 5500;
+
+// ================= THRESHOLD =================
+const float LUX_THRESHOLD = 1500.0;   // Change to suit your testing
+
+#define ENCODER_DEADBAND 20
+
+volatile long encoderValue = 0;
+volatile int lastEncoded = 0;
+
+long targetPosition = CLEAR_POSITION;
+
+// ================= EEPROM =================
+const int EEPROM_ADDR = 0;
+unsigned long lastSaveTime = 0;
+const unsigned long saveInterval = 5500;
+
+// =================================================
+void IRAM_ATTR updateEncoder();
+
+void setup() {
+
+  Serial.begin(115200);
+
+  pinMode(MotFwd, OUTPUT);
+  pinMode(MotRev, OUTPUT);
+
+  pinMode(encoderPin1, INPUT_PULLUP);
+  pinMode(encoderPin2, INPUT_PULLUP);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  if (!lightMeter.begin()) {
+    Serial.println("BH1750 NOT FOUND");
+  }
+
+  EEPROM.begin(64);
+  EEPROM.get(EEPROM_ADDR, encoderValue);
+
+  attachInterrupt(digitalPinToInterrupt(encoderPin1), updateEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(encoderPin2), updateEncoder, CHANGE);
+}
+
+void loop() {
+
+  float lux = lightMeter.readLightLevel();
+
+  if (lux > LUX_THRESHOLD)
+    targetPosition = DARK_POSITION;
+  else
+    targetPosition = CLEAR_POSITION;
+
+  moveToTarget();
+
+  if (millis() - lastSaveTime > saveInterval) {
+    EEPROM.put(EEPROM_ADDR, encoderValue);
+    EEPROM.commit();
+    lastSaveTime = millis();
+  }
+
+  Serial.print("Lux: ");
+  Serial.print(lux);
+  Serial.print(" Target: ");
+  Serial.print(targetPosition);
+  Serial.print(" Encoder: ");
+  Serial.println(encoderValue);
+
+  delay(10);
+}
+
+// =================================================
+
+void moveToTarget() {
+
+  long error = targetPosition - encoderValue;
+
+  if (abs(error) <= ENCODER_DEADBAND) {
+    digitalWrite(MotFwd, LOW);
+    digitalWrite(MotRev, LOW);
+    return;
+  }
+
+  if (error > 0) {
+    digitalWrite(MotFwd, LOW);
+    digitalWrite(MotRev, HIGH);
+  } else {
+    digitalWrite(MotFwd, HIGH);
+    digitalWrite(MotRev, LOW);
+  }
+}
+
+// =================================================
+
+void IRAM_ATTR updateEncoder() {
+
+  int MSB = digitalRead(encoderPin1);
+  int LSB = digitalRead(encoderPin2);
+
+  int encoded = (MSB << 1) | LSB;
+  int sum = (lastEncoded << 2) | encoded;
+
+  if (sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011)
+    encoderValue--;
+
+  if (sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000)
+    encoderValue++;
+
+  lastEncoded = encoded;
+}
